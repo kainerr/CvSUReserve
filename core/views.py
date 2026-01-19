@@ -1,109 +1,139 @@
-from django.shortcuts import render, redirect
-from django.contrib.auth.decorators import login_required
-from .forms import BookingForm
-from .models import Booking  # <-- Added this import so we can fetch data
-from django.contrib.admin.views.decorators import staff_member_required
-from django.shortcuts import get_object_or_404
-from .models import Profile, Notification # We will use this to notify students!
-from django.contrib.auth.forms import UserCreationForm
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login
-from django.shortcuts import render, redirect, get_object_or_404 # <--- Verify this import exists
 from django.contrib import messages
+from django.urls import reverse_lazy
+from django.utils.decorators import method_decorator
+from django.contrib.auth.decorators import login_required
+from django.contrib.admin.views.decorators import staff_member_required
 
-# LANDING PAGE
-def landing_page(request):
-    return render(request, 'core/index.html')
+# Class-Based View Imports
+from django.views.generic import TemplateView, ListView, CreateView, View, DeleteView
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
+from django.contrib.auth.forms import UserCreationForm
 
-# 1. THE DASHBOARD (Home Page)
-@login_required
-def dashboard(request):
-    # Fetch bookings for the CURRENT logged-in user only, ordered by newest first
-    my_bookings = Booking.objects.filter(user=request.user).order_by('-start_time')
-
-    return render(request, 'core/dashboard.html', {'bookings': my_bookings})
-
-
-# 2. THE BOOKING FORM
-@login_required
-def create_booking(request):
-    if request.method == 'POST':
-        form = BookingForm(request.POST)
-        if form.is_valid():
-            booking = form.save(commit=False)
-            booking.user = request.user  # Attach the logged-in user
-            booking.save()
-            form.save_m2m()  # Save the equipment selection
-            return redirect('success_page')
-    else:
-        form = BookingForm()
-
-    return render(request, 'core/booking_form.html', {'form': form})
+# Models & Forms
+from .models import Booking, Profile, Notification
+from .forms import BookingForm
 
 
-# 3. THE SUCCESS PAGE
-def success_page(request):
-    return render(request, 'core/success.html')
+# ---------------------------------------------------------
+# 1. LANDING PAGE & STATIC PAGES
+# ---------------------------------------------------------
+class LandingPageView(TemplateView):
+    template_name = 'core/index.html'
 
 
-# 4. ADMIN DASHBOARD (For approving requests)
-@staff_member_required
-def admin_approval_list(request):
-    # Fetch all bookings that are still 'pending'
-    pending_bookings = Booking.objects.filter(status='pending').order_by('start_time')
-    return render(request, 'core/admin_approval.html', {'bookings': pending_bookings})
+class SuccessPageView(TemplateView):
+    template_name = 'core/success.html'
 
 
-# 5. APPROVE/REJECT ACTION
-@staff_member_required
-def update_booking_status(request, booking_id, new_status):
-    booking = get_object_or_404(Booking, id=booking_id)
+# ---------------------------------------------------------
+# 2. DASHBOARD (Read)
+# ---------------------------------------------------------
+class DashboardView(LoginRequiredMixin, ListView):
+    model = Booking
+    template_name = 'core/dashboard.html'
+    context_object_name = 'bookings'
 
-    if new_status in ['approved', 'rejected']:
-        booking.status = new_status
+    def get_queryset(self):
+        # Fetch bookings for the CURRENT logged-in user only
+        return Booking.objects.filter(user=self.request.user).order_by('-start_time')
+
+
+# ---------------------------------------------------------
+# 3. CREATE BOOKING (Create)
+# ---------------------------------------------------------
+class BookingCreateView(LoginRequiredMixin, CreateView):
+    model = Booking
+    form_class = BookingForm
+    template_name = 'core/booking_form.html'
+    success_url = reverse_lazy('success_page')
+
+    def form_valid(self, form):
+        # Attach the logged-in user before saving
+        booking = form.save(commit=False)
+        booking.user = self.request.user
         booking.save()
-
-        # Create a notification for the student (Hits your Notification Objective!)
-        Notification.objects.create(
-            user=booking.user,
-            message=f"Your booking for {booking.room.name} has been {new_status}."
-        )
-
-    return redirect('admin_approval_list')
+        form.save_m2m()  # Save Many-to-Many data (Equipment)
+        return redirect(self.success_url)
 
 
-# 6. SIGNUP
-def signup(request):
-    if request.method == 'POST':
-        form = UserCreationForm(request.POST)
-        department = request.POST.get('department')  # Get the dropdown value
+# ---------------------------------------------------------
+# 4. ADMIN APPROVAL (Read - Staff Only)
+# ---------------------------------------------------------
+class AdminApprovalListView(UserPassesTestMixin, ListView):
+    model = Booking
+    template_name = 'core/admin_approval.html'
+    context_object_name = 'bookings'
 
-        if form.is_valid():
-            user = form.save()
-            # Create the Profile linked to this new User
-            # We default role to 'student'
-            Profile.objects.create(user=user, role='student', department=department)
+    # This replaces @staff_member_required
+    def test_func(self):
+        return self.request.user.is_staff
 
-            login(request, user)  # Log them in immediately
-            return redirect('dashboard')
-    else:
-        form = UserCreationForm()
+    def get_queryset(self):
+        return Booking.objects.filter(status='pending').order_by('start_time')
 
-    return render(request, 'registration/signup.html', {'form': form})
 
-# 7. CANCEL BOOKING
-@login_required
-def cancel_booking(request, booking_id):
-    # 1. Get the booking object
-    # We add 'user=request.user' to ensure students can ONLY delete their OWN bookings
-    booking = get_object_or_404(Booking, id=booking_id, user=request.user)
+# ---------------------------------------------------------
+# 5. UPDATE STATUS (Update - Staff Only)
+# ---------------------------------------------------------
+# Note: Since this is an action (redirect) and not a page, a standard View is best.
+class BookingStatusUpdateView(UserPassesTestMixin, View):
+    def test_func(self):
+        return self.request.user.is_staff
 
-    # 2. Check if it is allowed to be deleted
-    # (Optional: You might strictly only allow deleting 'pending' requests)
-    if booking.status == 'pending':
-        booking.delete()  # <--- This performs the SQL DELETE operation
-        messages.success(request, "Booking cancelled successfully.")
-    else:
-        messages.error(request, "You cannot cancel a booking that has already been processed.")
+    def get(self, request, booking_id, new_status):
+        booking = get_object_or_404(Booking, id=booking_id)
 
-    # 3. Send them back to the dashboard
-    return redirect('dashboard')
+        if new_status in ['approved', 'rejected']:
+            booking.status = new_status
+            booking.save()
+
+            # Create Notification
+            Notification.objects.create(
+                user=booking.user,
+                message=f"Your booking for {booking.room.name} has been {new_status}."
+            )
+
+        return redirect('admin_approval_list')
+
+
+# ---------------------------------------------------------
+# 6. SIGNUP (Create User)
+# ---------------------------------------------------------
+class SignupView(CreateView):
+    form_class = UserCreationForm
+    template_name = 'registration/signup.html'
+    success_url = reverse_lazy('dashboard')
+
+    def form_valid(self, form):
+        # Save the User
+        user = form.save()
+
+        # Get department from the dropdown (POST data)
+        department = self.request.POST.get('department')
+
+        # Create the Profile
+        Profile.objects.create(user=user, role='student', department=department)
+
+        # Log them in immediately
+        login(self.request, user)
+        return redirect(self.success_url)
+
+
+# ---------------------------------------------------------
+# 7. CANCEL BOOKING (Delete)
+# ---------------------------------------------------------
+class CancelBookingView(LoginRequiredMixin, View):
+    def get(self, request, booking_id):
+        # We use a custom View instead of DeleteView because we want to
+        # delete on a simple link click (GET request), not a form submit.
+        booking = get_object_or_404(Booking, id=booking_id, user=request.user)
+
+        if booking.status == 'pending':
+            booking.delete()
+            messages.success(request, "Booking cancelled successfully.")
+        else:
+            messages.error(request, "You cannot cancel a booking that has already been processed.")
+
+        return redirect('dashboard')
