@@ -1,47 +1,76 @@
+{% load static %}
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>CvSUReserve - Admin Approval</title>
+    <meta charset="UTF-8">
+    <title>Admin Approval Dashboard | CvSUReserve</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="icon" type="image/png" href="{% static 'core/cvsu_logo.png' %}">
 </head>
 <body class="bg-light">
 
-<nav class="navbar navbar-dark bg-dark mb-4">
-    <div class="container">
-        <span class="navbar-brand">CvSUReserve | Admin Panel</span>
-        <a href="/" class="btn btn-outline-light btn-sm">Back to Home</a>
+<nav class="navbar navbar-dark bg-dark mb-5 shadow-sm">
+    <div class="container"> <span class="navbar-brand mb-0 h1">Admin Dashboard</span>
+
+        <div class="d-flex align-items-center">
+            <span class="text-white me-3 d-none d-md-inline">Logged in as: <strong>{{ user.username }}</strong></span>
+
+            <a href="{% url 'landing_page' %}" class="btn btn-outline-light btn-sm me-2">Home</a>
+            <a href="/admin/" target="_blank" class="btn btn-outline-warning btn-sm me-2">Database</a>
+
+            <form action="{% url 'logout' %}" method="post" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger btn-sm fw-bold">Logout</button>
+            </form>
+        </div>
     </div>
 </nav>
 
 <div class="container">
-    <h3 class="mb-3">Pending Booking Requests</h3>
 
-    {% if bookings %}
-    <div class="card shadow">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3>Pending Booking Requests</h3>
+    </div>
+
+    <div class="card shadow-sm mb-5">
         <div class="card-body p-0">
-            <table class="table table-hover mb-0">
-                <thead class="bg-secondary text-white">
+            <table class="table table-hover table-striped mb-0">
+                <thead class="table-dark">
                     <tr>
                         <th>Student</th>
                         <th>Room</th>
                         <th>Date & Time</th>
-                        <th>Purpose</th>
-                        <th>Actions</th>
+                        <th>Equipment</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for booking in bookings %}
                     <tr>
-                        <td>{{ booking.user.username }}</td>
-                        <td>{{ booking.room.name }}</td>
-                        <td>
+                        <td class="align-middle fw-bold">{{ booking.user.username }}</td>
+                        <td class="align-middle">{{ booking.room.name }}</td>
+                        <td class="align-middle">
                             {{ booking.start_time|date:"M d, Y" }}<br>
-                            <small class="text-muted">{{ booking.start_time|time:"H:i" }} - {{ booking.end_time|time:"H:i" }}</small>
+                            <small class="text-muted">{{ booking.start_time|date:"h:i A" }} - {{ booking.end_time|date:"h:i A" }}</small>
                         </td>
-                        <td>{{ booking.purpose }}</td>
-                        <td>
-                            <a href="{% url 'update_status' booking.id 'approved' %}" class="btn btn-success btn-sm">Approve</a>
-                            <a href="{% url 'update_status' booking.id 'rejected' %}" class="btn btn-danger btn-sm">Reject</a>
+                        <td class="align-middle">
+                            {% for item in booking.equipment.all %}
+                                <span class="badge bg-secondary">{{ item.name }}</span>
+                            {% empty %}
+                                <span class="text-muted small">None</span>
+                            {% endfor %}
+                        </td>
+                        <td class="align-middle">
+                            <div class="btn-group">
+                                <a href="{% url 'update_booking_status' booking.id 'approved' %}" class="btn btn-success btn-sm">Approve</a>
+                                <a href="{% url 'update_booking_status' booking.id 'rejected' %}" class="btn btn-danger btn-sm">Reject</a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center p-4 bg-success-subtle text-success border-success">
+                            <strong>No pending requests! All caught up.</strong>
                         </td>
                     </tr>
                     {% endfor %}
@@ -49,10 +78,104 @@
             </table>
         </div>
     </div>
-    {% else %}
-        <div class="alert alert-success">No pending requests! All caught up.</div>
-    {% endif %}
-</div>
 
-</body>
+    <hr class="my-5">
+
+    <h3 class="text-success mb-3">Current Approved Schedule</h3>
+
+    <div class="card shadow-sm mb-5">
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-success">
+                    <tr>
+                        <th>Student</th>
+                        <th>Room</th>
+                        <th>Schedule</th>
+                        <th>Equipment</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for booking in approved_bookings %}
+                    <tr>
+                        <td class="align-middle">{{ booking.user.username }}</td>
+                        <td class="align-middle fw-bold">{{ booking.room.name }}</td>
+                        <td class="align-middle">
+                            {{ booking.start_time|date:"M d, Y" }}<br>
+                            <small class="text-muted">{{ booking.start_time|date:"h:i A" }} - {{ booking.end_time|date:"h:i A" }}</small>
+                        </td>
+                        <td class="align-middle">
+                            {% for item in booking.equipment.all %}
+                                <span class="badge bg-secondary">{{ item.name }}</span>
+                            {% empty %}
+                                <span class="text-muted">-</span>
+                            {% endfor %}
+                        </td>
+                        <td class="align-middle"><span class="badge bg-success">Approved</span></td>
+                        <td class="align-middle">
+                            <a href="{% url 'update_booking_status' booking.id 'rejected' %}"
+                               class="btn btn-outline-danger btn-sm"
+                               onclick="return confirm('Revoke this booking?');">Revoke</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="text-center p-4 text-muted">No upcoming approved reservations.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+<hr class="my-5">
+
+    <h3 class="text-muted mb-3">Reservation History</h3>
+
+    <div class="card shadow-sm mb-5">
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Student</th>
+                        <th>Room</th>
+                        <th>Schedule</th>
+                        <th>Status</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for booking in history_bookings %}
+                    <tr class="opacity-75"> <td class="align-middle">{{ booking.user.username }}</td>
+                        <td class="align-middle">{{ booking.room.name }}</td>
+                        <td class="align-middle">
+                            {{ booking.start_time|date:"M d, Y" }}<br>
+                            <small class="text-muted">
+                                {{ booking.start_time|date:"h:i A" }} - {{ booking.end_time|date:"h:i A" }}
+                            </small>
+                        </td>
+                        <td class="align-middle">
+                        {% if booking.status == 'rejected' %}
+                            <span class="badge bg-danger">Rejected</span>
+                        {% elif booking.status == 'cancelled' %}
+                            <span class="badge bg-secondary">Cancelled</span>
+                        {% elif booking.status == 'completed' %}
+                            <span class="badge bg-primary">Completed</span> {% endif %}
+                        </td>
+                        <td class="align-middle text-muted small">
+                            Archived
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center p-4 text-muted">
+                            No history records found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div> </body>
 </html>

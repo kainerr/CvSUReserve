@@ -1,31 +1,33 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import login
 from django.contrib import messages
-from django.urls import reverse_lazy
-from django.utils.decorators import method_decorator
+from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
-from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
+from django.shortcuts import redirect, get_object_or_404
+from django.urls import reverse_lazy
+from django.utils import timezone
 
 # Class-Based View Imports
-from django.views.generic import TemplateView, ListView, CreateView, View, DeleteView
-from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
-from django.contrib.auth.forms import UserCreationForm
+from django.views.generic import TemplateView, ListView, CreateView, View, UpdateView
+from .forms import BookingForm
 
 # Models & Forms
 from .models import Booking, Profile, Notification
-from .forms import BookingForm
 
+# UPDATES THE STATUS OF THE BOOKINGS USING TIME
+def update_past_bookings():
+    """
+    Auto-completes bookings that have passed.
+    """
+    now = timezone.now()
+    # Check for 'approved' bookings where the end_time is older than 'now'
+    Booking.objects.filter(status='approved', end_time__lt=now).update(status='completed')
 
 # ---------------------------------------------------------
 # 1. LANDING PAGE & STATIC PAGES
 # ---------------------------------------------------------
 class LandingPageView(TemplateView):
     template_name = 'core/index.html'
-
-
-class SuccessPageView(TemplateView):
-    template_name = 'core/success.html'
-
 
 # ---------------------------------------------------------
 # 2. DASHBOARD (Read)
@@ -36,10 +38,20 @@ class DashboardView(LoginRequiredMixin, ListView):
     context_object_name = 'bookings'
 
     def get_queryset(self):
-        # Fetch bookings for the CURRENT logged-in user only
+        # 1. Run the auto-complete check
+        update_past_bookings()
+        # 2. Get bookings
         return Booking.objects.filter(user=self.request.user).order_by('-start_time')
 
-
+    # ADD THIS FUNCTION TO GET NOTIFICATIONS
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # Fetch the last 5 notifications for this user
+        context['notifications'] = Notification.objects.filter(
+            user=self.request.user
+        ).order_by('-created_at')[:5]
+        # (Assuming your Notification model has a 'created_at' or 'date' field)
+        return context
 # ---------------------------------------------------------
 # 3. CREATE BOOKING (Create)
 # ---------------------------------------------------------
@@ -47,37 +59,51 @@ class BookingCreateView(LoginRequiredMixin, CreateView):
     model = Booking
     form_class = BookingForm
     template_name = 'core/booking_form.html'
-    success_url = reverse_lazy('success_page')
+    success_url = reverse_lazy('dashboard')  # <--- CHANGE THIS from 'success_page'
 
     def form_valid(self, form):
-        # Attach the logged-in user before saving
-        booking = form.save(commit=False)
-        booking.user = self.request.user
-        booking.save()
-        form.save_m2m()  # Save Many-to-Many data (Equipment)
-        return redirect(self.success_url)
+        # 1. Attach the user
+        form.instance.user = self.request.user
 
+        # 2. Add a success message (Optional but recommended)
+        messages.success(self.request, "Reservation submitted successfully!")
 
+        # 3. Let Django handle the save and redirect
+        return super().form_valid(form)
 # ---------------------------------------------------------
 # 4. ADMIN APPROVAL (Read - Staff Only)
 # ---------------------------------------------------------
 class AdminApprovalListView(UserPassesTestMixin, ListView):
     model = Booking
     template_name = 'core/admin_approval.html'
-    context_object_name = 'bookings'
+    context_object_name = 'bookings'  # This is the 'Pending' list
 
-    # This replaces @staff_member_required
     def test_func(self):
         return self.request.user.is_staff
 
     def get_queryset(self):
+        # 1. TRIGGER THE CHECK (Update statuses before loading)
+        update_past_bookings()
+
+        # Return pending requests
         return Booking.objects.filter(status='pending').order_by('start_time')
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        # 2. Approved List (Only show UPCOMING approved bookings)
+        context['approved_bookings'] = Booking.objects.filter(status='approved').order_by('start_time')
+
+        # 3. History List (Add 'completed' here so they appear in history!)
+        context['history_bookings'] = Booking.objects.filter(
+            status__in=['rejected', 'cancelled', 'completed']  # <--- ADD 'completed'
+        ).order_by('-start_time')
+
+        return context
 
 # ---------------------------------------------------------
 # 5. UPDATE STATUS (Update - Staff Only)
 # ---------------------------------------------------------
-# Note: Since this is an action (redirect) and not a page, a standard View is best.
 class BookingStatusUpdateView(UserPassesTestMixin, View):
     def test_func(self):
         return self.request.user.is_staff
@@ -96,7 +122,6 @@ class BookingStatusUpdateView(UserPassesTestMixin, View):
             )
 
         return redirect('admin_approval_list')
-
 
 # ---------------------------------------------------------
 # 6. SIGNUP (Create User)
@@ -137,3 +162,47 @@ class CancelBookingView(LoginRequiredMixin, View):
             messages.error(request, "You cannot cancel a booking that has already been processed.")
 
         return redirect('dashboard')
+
+# login router for student and admin
+@login_required
+def login_router(request):
+    if request.user.is_staff:
+        # If they are staff/admin, send them to the Admin Panel
+        return redirect('admin_approval_list')
+    else:
+        # If they are a student, send them to the Dashboard
+        return redirect('dashboard')
+
+# ---------------------------------------------------------
+# 8. EDIT BOOKING (Update - Student Only, Pending Only)
+# ---------------------------------------------------------
+class BookingUpdateView(LoginRequiredMixin, UserPassesTestMixin, UpdateView):
+    model = Booking
+    form_class = BookingForm
+    template_name = 'core/booking_form.html' # We reuse the existing form template!
+    success_url = reverse_lazy('dashboard')
+
+    def test_func(self):
+        # SECURITY CHECK:
+        # 1. Get the booking trying to be accessed
+        booking = self.get_object()
+        # 2. Check if the logged-in user owns it AND it is still pending
+        return booking.user == self.request.user and booking.status == 'pending'
+
+    def handle_no_permission(self):
+        # If they try to hack the URL to edit an Approved booking, show an error
+        messages.error(self.request, "You can only edit pending reservations.")
+        return redirect('dashboard')
+
+    def form_valid(self, form):
+        # Optional: Add logic here if you need to re-validate dates
+        messages.success(self.request, "Booking details updated successfully!")
+        return super().form_valid(form)
+
+# CLEAR NOTIFICATIONS FUNCTION
+@login_required
+def clear_notifications(request):
+    # Delete all notifications for the current user
+    Notification.objects.filter(user=request.user).delete()
+    # Go back to the dashboard
+    return redirect('dashboard')

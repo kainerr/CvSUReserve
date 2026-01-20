@@ -14,6 +14,7 @@ BOOKING_STATUS_CHOICES = (
     ('approved', 'Approved'),
     ('rejected', 'Rejected'),
     ('cancelled', 'Cancelled'),
+    ('completed', 'Completed'),
 )
 
 
